@@ -1,0 +1,16 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: system-health-monitor
+  namespace: wisecow
+spec:
+  schedule: "*/5 * * * *"  # every 5 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: system-health
+            image: registry-1.docker.io/REPLACE_ME/wisecow:latest
+            command: ["python3", "/app/system_health_monitor.py"]
