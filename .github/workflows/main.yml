@@ -1,57 +1,121 @@
-name: CI/CD Pipeline
+name: ci-cd
 
 on:
   push:
     branches:
       - main
+  pull_request:
 
 env:
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/wisecow
+  IMAGE_NAME: wisecow
+  KUBE_NAMESPACE: wisecow
+  INGRESS_HOST: wisecow.local
 
 jobs:
-  build_and_push:
+  lint-and-build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
+    outputs:
+      image_ref: ${{ steps.image.outputs.image_ref }}
+      latest_ref: ${{ steps.image.outputs.latest_ref }}
+      owner_lc: ${{ steps.owner.outputs.value }}
     steps:
-      - name: Checkout code
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+      - name: Normalize owner
+        id: owner
+        run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute image references
+        id: image
+        run: |
+          echo "image_ref=ghcr.io/${{ steps.owner.outputs.value }}/${{ env.IMAGE_NAME }}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "latest_ref=ghcr.io/${{ steps.owner.outputs.value }}/${{ env.IMAGE_NAME }}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Lint shell scripts
+        run: |
+          bash -n wisecow.sh
+          bash -n scripts/system_health_monitor.sh
+          bash -n scripts/app_health_checker.sh
+          bash -n scripts/generate-tls-cert.sh
+          shellcheck wisecow.sh scripts/system_health_monitor.sh scripts/app_health_checker.sh scripts/generate-tls-cert.sh
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+      - name: Build and optionally push image
+        uses: docker/build-push-action@v6
         with:
-          push: true
-          tags: ${{ env.IMAGE_NAME }}:latest,${{ env.IMAGE_NAME }}:${{ github.sha }}
-          file: ./Dockerfile
+          context: .
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ steps.image.outputs.image_ref }}
+            ${{ steps.image.outputs.latest_ref }}
 
   deploy:
     runs-on: ubuntu-latest
-    needs: build_and_push
+    needs: lint-and-build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KUBECONFIG_BASE64 != ''
+    permissions:
+      contents: read
+      packages: read
     steps:
-      - name: Checkout code
+      - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Set up kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v4
 
       - name: Configure kubeconfig
+        env:
+          KUBECONFIG_BASE64: ${{ secrets.KUBECONFIG_BASE64 }}
         run: |
-          echo "${{ secrets.KUBE_CONFIG }}" | base64 --decode > kubeconfig
-          export KUBECONFIG=$PWD/kubeconfig
-      - name: Deploy to Kubernetes
+          mkdir -p "$HOME/.kube"
+          echo "$KUBECONFIG_BASE64" | base64 --decode > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Generate self-signed ingress certificate
+        run: ./scripts/generate-tls-cert.sh "${INGRESS_HOST}" certs
+
+      - name: Create or update TLS secret
         run: |
-          kubectl apply -f deployment.yaml
-          kubectl apply -f ingress.yaml
-          kubectl apply -f cronjob-system-health.yaml
+          kubectl -n "${KUBE_NAMESPACE}" create namespace "${KUBE_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "${KUBE_NAMESPACE}" create secret tls wisecow-tls \
+            --cert=certs/tls.crt \
+            --key=certs/tls.key \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply manifests
+        run: kubectl apply -k k8s
+
+      - name: Update deployment image
+        run: |
+          kubectl -n "${KUBE_NAMESPACE}" set image deployment/wisecow \
+            wisecow="${{ needs.lint-and-build.outputs.image_ref }}"
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/wisecow -n "${KUBE_NAMESPACE}" --timeout=180s
+
+      - name: Apply KubeArmor policy when available
+        run: |
+          if kubectl get crd kubearmorpolicies.security.kubearmor.com >/dev/null 2>&1; then
+            kubectl apply -f k8s/kubearmor-policy.yaml
+          else
+            echo "KubeArmor CRD not present. Skipping optional policy apply."
+          fi
