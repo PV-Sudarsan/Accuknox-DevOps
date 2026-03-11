@@ -6,7 +6,7 @@ metadata:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: wisecow-deployment
+  name: wisecow
   namespace: wisecow
   labels:
     app: wisecow
@@ -20,45 +20,53 @@ spec:
       labels:
         app: wisecow
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
-      - name: wisecow-container
-        image: registry-1.docker.io/REPLACE_ME/wisecow:latest
-        imagePullPolicy: IfNotPresent
-        ports:
-        - containerPort: 4499
-        env:
-        - name: LC_ALL
-          value: "en_US.UTF-8"
-        - name: LANG
-          value: "en_US.UTF-8"
-        readinessProbe:
-          tcpSocket:
-            port: 4499
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: 4499
-          initialDelaySeconds: 10
-          periodSeconds: 20
-        resources:
-          requests:
-            cpu: "100m"
-            memory: "128Mi"
-          limits:
-            cpu: "500m"
-            memory: "512Mi"
+        - name: wisecow
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "4499"
+          ports:
+            - name: http
+              containerPort: 4499
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: wisecow-service
+  name: wisecow
   namespace: wisecow
 spec:
   selector:
     app: wisecow
   ports:
-  - protocol: TCP
-    port: 80
-    targetPort: 4499
+    - name: http
+      port: 80
+      targetPort: http
   type: ClusterIP

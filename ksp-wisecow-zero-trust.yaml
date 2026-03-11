@@ -1,0 +1,47 @@
+apiVersion: security.kubearmor.com/v1
+kind: KubeArmorPolicy
+metadata:
+  name: wisecow-zero-trust
+  namespace: wisecow
+spec:
+  selector:
+    matchLabels:
+      app: wisecow
+  process:
+    matchPaths:
+      - path: /app/wisecow.sh
+      - path: /usr/bin/bash
+      - path: /bin/bash
+      - path: /bin/cat
+      - path: /usr/bin/cat
+      - path: /usr/bin/nc
+      - path: /bin/nc
+      - path: /usr/games/cowsay
+      - path: /usr/games/fortune
+      - path: /usr/bin/sleep
+      - path: /bin/sleep
+    action: Allow
+  file:
+    matchDirectories:
+      - dir: /app/
+        recursive: true
+      - dir: /tmp/
+        recursive: true
+      - dir: /usr/games/
+        recursive: true
+      - dir: /etc/
+        recursive: true
+      - dir: /dev/
+        recursive: true
+      - dir: /proc/
+        recursive: true
+    action: Allow
+  network:
+    matchProtocols:
+      - protocol: TCP
+    action: Allow
+  capabilities:
+    matchCapabilities:
+      - capability: NET_BIND_SERVICE
+    action: Allow
+  action: Block

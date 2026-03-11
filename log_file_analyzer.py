@@ -1,65 +1,79 @@
+#!/usr/bin/env python3
+
+import argparse
 import re
 from collections import Counter
-import argparse
 
-# Function to parse a single log line (common combined log format-ish)
+LOG_PATTERN = re.compile(
+    r'(?P<ip>[\d\.]+)\s+\S+\s+\S+\s+\[(?P<date_time>[^\]]+)\]\s+"(?P<request>[^"]+)"\s+'
+    r"(?P<status>\d{3})\s+(?P<size>\d+|-)"
+)
+
+
 def parse_log_line(line):
-    pattern = re.compile(
-        r'(?P<ip>[\d\.]+) - - \[(?P<date_time>[^\]]+)\] "(?P<request>[^"]+)" (?P<status>\d+) (?P<size>\d+|-)'
-    )
-    match = pattern.match(line)
-    if match:
-        return match.groupdict()
-    return None
+    match = LOG_PATTERN.match(line)
+    return match.groupdict() if match else None
+
 
 def analyze_log_file(log_file_path):
-    request_counter = Counter()
     status_counter = Counter()
     ip_counter = Counter()
     page_counter = Counter()
+    malformed_lines = 0
 
-    with open(log_file_path, 'r', errors='replace') as file:
-        for line in file:
+    with open(log_file_path, "r", encoding="utf-8", errors="replace") as file_handle:
+        for line in file_handle:
             log_data = parse_log_line(line)
-            if log_data:
-                request = log_data['request']
-                status = log_data['status']
-                ip = log_data['ip']
-
-                request_counter[request] += 1
-                status_counter[status] += 1
-                ip_counter[ip] += 1
-
-                parts = request.split(' ')
-                if len(parts) > 1:
-                    page = parts[1]
-                    page_counter[page] += 1
-            else:
-                # skip malformed lines silently
+            if not log_data:
+                malformed_lines += 1
                 continue
 
-    return request_counter, status_counter, ip_counter, page_counter
+            request = log_data["request"].split()
+            status_counter[log_data["status"]] += 1
+            ip_counter[log_data["ip"]] += 1
 
-def generate_report(log_file_path):
-    request_counter, status_counter, ip_counter, page_counter = analyze_log_file(log_file_path)
+            if len(request) >= 2:
+                page_counter[request[1]] += 1
 
-    lines = []
-    lines.append("===== Web Server Log Analysis Report =====")
-    num_404_errors = status_counter.get('404', 0)
-    lines.append(f"Number of 404 errors: {num_404_errors}")
-    lines.append('\nTop 10 Most Requested Pages:')
-    for page, count in page_counter.most_common(10):
-        lines.append(f"{page}: {count} requests")
-    lines.append('\nTop 10 IP Addresses with Most Requests:')
-    for ip, count in ip_counter.most_common(10):
-        lines.append(f"{ip}: {count} requests")
-    lines.append('==========================================')
-    report = '\n'.join(lines)
+    return status_counter, ip_counter, page_counter, malformed_lines
+
+
+def generate_report(log_file_path, top_n):
+    status_counter, ip_counter, page_counter, malformed_lines = analyze_log_file(log_file_path)
+    report_lines = [
+        "===== Web Server Log Analysis Report =====",
+        f"Number of 404 errors: {status_counter.get('404', 0)}",
+        f"Malformed lines skipped: {malformed_lines}",
+        "",
+        f"Top {top_n} Most Requested Pages:",
+    ]
+
+    for page, count in page_counter.most_common(top_n):
+        report_lines.append(f"{page}: {count} requests")
+
+    report_lines.extend(
+        [
+            "",
+            f"Top {top_n} IP Addresses with Most Requests:",
+        ]
+    )
+
+    for ip, count in ip_counter.most_common(top_n):
+        report_lines.append(f"{ip}: {count} requests")
+
+    report_lines.append("==========================================")
+    report = "\n".join(report_lines)
     print(report)
     return report
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Analyze a web server log file')
-    parser.add_argument('logfile', help='Path to the log file to analyze')
+
+def main():
+    parser = argparse.ArgumentParser(description="Analyze an Apache or Nginx access log.")
+    parser.add_argument("logfile", help="Path to the log file to analyze")
+    parser.add_argument("--top", type=int, default=10, help="Number of top results to show")
     args = parser.parse_args()
-    generate_report(args.logfile)
+    generate_report(args.logfile, args.top)
+
+
+if __name__ == "__main__":
+    main()

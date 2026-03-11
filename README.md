@@ -1,28 +1,95 @@
-# Cow wisdom web server
+# Wisecow on Kubernetes
 
-## Prerequisites
+Assessment submission for containerizing and deploying the `wisecow` application with Kubernetes, CI/CD, TLS, and supporting DevOps scripts.
 
+## Included artifacts
+
+- `Dockerfile`: production image for the Wisecow shell application
+- `deployment.yaml`: namespace, deployment, and service manifests
+- `ingress.yaml`: NGINX ingress with TLS
+- `.github/workflows/main.yml`: image build/push and cluster deployment workflow
+- `system_health_monitor.py`: Problem Statement 2 objective 1
+- `log_file_analyzer.py`: Problem Statement 2 objective 3
+- `app_health_checker.py`: extra utility for Problem Statement 2 objective 4
+- `ksp-wisecow-zero-trust.yaml`: optional KubeArmor zero-trust policy
+
+## Local container build
+
+```bash
+docker build -t wisecow:local .
+docker run --rm -p 4499:4499 wisecow:local
 ```
-sudo apt install fortune-mod cowsay -y
+
+Open `http://localhost:4499`.
+
+## Kubernetes deployment
+
+Apply the manifests after updating the image reference or letting CI render it during deployment:
+
+```bash
+kubectl apply -f deployment.yaml
+kubectl -n wisecow create secret tls wisecow-tls --cert=tls.crt --key=tls.key
+kubectl apply -f ingress.yaml
 ```
 
-## How to use?
+For local testing with Kind or Minikube, map `wisecow.local` to your ingress IP in `/etc/hosts`.
 
-1. Run `./wisecow.sh`
-2. Point the browser to server port (default 4499)
+## TLS
 
-## What to expect?
-![wisecow](https://github.com/nyrahul/wisecow/assets/9133227/8d6bfde3-4a5a-480e-8d55-3fef60300d98)
+The ingress expects a TLS secret named `wisecow-tls`. The GitHub Actions deployment job recreates that secret from repository secrets:
 
-# Problem Statement
-Deploy the wisecow application as a k8s app
+- `TLS_CRT`: PEM encoded certificate
+- `TLS_KEY`: PEM encoded private key
 
-## Requirement
-1. Create Dockerfile for the image and corresponding k8s manifest to deploy in k8s env. The wisecow service should be exposed as k8s service.
-2. Github action for creating new image when changes are made to this repo
-3. [Challenge goal]: Enable secure TLS communication for the wisecow app.
+For a self-signed local certificate:
 
-## Expected Artifacts
-1. Github repo containing the app with corresponding dockerfile, k8s manifest, any other artifacts needed.
-2. Github repo with corresponding github action.
-3. Github repo should be kept private and the access should be enabled for following github IDs: nyrahul, SujithKasireddy
+```bash
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout tls.key \
+  -out tls.crt \
+  -subj "/CN=wisecow.local/O=wisecow"
+```
+
+## GitHub Actions workflow
+
+The workflow:
+
+1. Builds the Docker image on every push and pull request.
+2. Pushes the image to `ghcr.io/<owner>/wisecow` on non-PR runs.
+3. Deploys to a self-hosted runner with `kubectl` access to the target cluster.
+4. Updates the Kubernetes deployment with the new image and applies the ingress.
+
+## Problem Statement 2 scripts
+
+Install dependencies:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+System health monitor:
+
+```bash
+python3 system_health_monitor.py --cpu-threshold 80 --memory-threshold 80 --disk-threshold 80
+python3 system_health_monitor.py --watch --interval 60
+```
+
+Log file analyzer:
+
+```bash
+python3 log_file_analyzer.py /var/log/nginx/access.log --top 5
+```
+
+Application health checker:
+
+```bash
+python3 app_health_checker.py https://wisecow.local
+```
+
+## Optional KubeArmor policy
+
+Apply the zero-trust policy after KubeArmor is installed:
+
+```bash
+kubectl apply -f ksp-wisecow-zero-trust.yaml
+```
