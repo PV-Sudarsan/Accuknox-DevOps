@@ -1,9 +1,10 @@
-name: Local Runner CI/CD
+name: Wisecow CI/CD
 
 on:
   push:
     branches:
       - main
+  pull_request:
   workflow_dispatch:
 
 env:
@@ -20,23 +21,23 @@ jobs:
       packages: write
 
     steps:
-      - name: Checkout code
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Runner info
+      - name: Show runner details
         run: |
           uname -a
           docker --version
           kubectl version --client
 
-      - name: Check shellcheck
+      - name: Ensure shellcheck exists
         run: |
           command -v shellcheck >/dev/null 2>&1 || {
-            echo "shellcheck is required on the self-hosted runner"
+            echo "shellcheck must be installed on the self-hosted runner"
             exit 1
           }
 
-      - name: Lint shell scripts
+      - name: Validate shell scripts
         run: |
           bash -n wisecow.sh
           bash -n scripts/system_health_monitor.sh
@@ -44,39 +45,45 @@ jobs:
           bash -n scripts/generate-tls-cert.sh
           shellcheck wisecow.sh scripts/system_health_monitor.sh scripts/app_health_checker.sh scripts/generate-tls-cert.sh
 
-      - name: Set image variables
+      - name: Compute image references
         run: |
           OWNER_LC=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          echo "OWNER_LC=${OWNER_LC}" >> "$GITHUB_ENV"
           echo "IMAGE_REF=ghcr.io/${OWNER_LC}/${IMAGE_NAME}:${GITHUB_SHA}" >> "$GITHUB_ENV"
           echo "IMAGE_LATEST=ghcr.io/${OWNER_LC}/${IMAGE_NAME}:latest" >> "$GITHUB_ENV"
 
-      - name: Log in to GHCR
+      - name: Login to GHCR
+        if: github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build image
+      - name: Build Docker image
         run: |
           docker build -t "${IMAGE_REF}" -t "${IMAGE_LATEST}" .
 
-      - name: Push image
+      - name: Push Docker image
+        if: github.ref == 'refs/heads/main'
         run: |
           docker push "${IMAGE_REF}"
           docker push "${IMAGE_LATEST}"
 
       - name: Configure kubeconfig
+        if: github.ref == 'refs/heads/main'
         run: |
           mkdir -p "$HOME/.kube"
           echo "${{ secrets.KUBECONFIG_BASE64 }}" | base64 -d > "$HOME/.kube/config"
           chmod 600 "$HOME/.kube/config"
 
-      - name: Generate TLS cert
+      - name: Generate TLS certificate
+        if: github.ref == 'refs/heads/main'
         run: |
           ./scripts/generate-tls-cert.sh "${INGRESS_HOST}" certs
 
       - name: Create namespace and TLS secret
+        if: github.ref == 'refs/heads/main'
         run: |
           kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n "${NAMESPACE}" create secret tls wisecow-tls \
@@ -84,14 +91,22 @@ jobs:
             --key=certs/tls.key \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Apply manifests
+      - name: Apply Kubernetes manifests
+        if: github.ref == 'refs/heads/main'
         run: |
           kubectl apply -k k8s
 
       - name: Update deployment image
+        if: github.ref == 'refs/heads/main'
         run: |
           kubectl -n "${NAMESPACE}" set image deployment/wisecow wisecow="${IMAGE_REF}"
 
       - name: Wait for rollout
+        if: github.ref == 'refs/heads/main'
         run: |
           kubectl rollout status deployment/wisecow -n "${NAMESPACE}" --timeout=180s
+
+      - name: Verify deployed resources
+        if: github.ref == 'refs/heads/main'
+        run: |
+          kubectl get pods,svc,ingress -n "${NAMESPACE}"
