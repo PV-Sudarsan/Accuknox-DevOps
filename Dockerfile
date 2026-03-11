@@ -1,4 +1,4 @@
-# Use a smaller Debian base for reproducible builds
+
 FROM debian:bookworm-slim
 
 # Install necessary packages and clean up apt lists to reduce image size
